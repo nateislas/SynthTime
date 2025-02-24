@@ -169,3 +169,25 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Excel files
+*.xlsx
+
+# XML files
+*.xml
+
+# HDF5 files
+*.hdf5
+
+# Parquet files
+*.parquet
+
+# SQLite database files
+*.sqlite
+*.sqlite3
+
+# Compressed files
+*.tar
+*.zip
+*.gz
+
