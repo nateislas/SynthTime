@@ -76,10 +76,8 @@ class TimeSeriesDataset:
 
     def _create_sequences(self, data):
         sequences = []
-        print(len(data))
         for i in range(len(data) - self.seq_len):
             sequences.append(data[i:i + self.seq_len])
-            print(f'[{i+1}/{len(data)}]', end='\r')
         return np.array(sequences)
 
     def get_datasets(self):
