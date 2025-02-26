@@ -2,12 +2,10 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
-
+import os
 import uuid
 from datetime import datetime
 from typing import Tuple
-
-from sympy import simplify
 from torch.utils.data import DataLoader, Dataset
 
 
@@ -27,7 +25,7 @@ class Encoder(nn.Module):
     def __init__(self, input_dim, hidden_dim, num_layers):
         super().__init__()
         self.rnn = nn.GRU(input_size=input_dim, hidden_size=hidden_dim,
-                           num_layers=num_layers, batch_first=True)
+                           num_layers=num_layers, batch_first=True, dropout=0.2)
     def forward(self, x):
         # x shape: [batch, seq_len, input_dim]
         out, _ = self.rnn(x)
@@ -38,7 +36,7 @@ class Decoder(nn.Module):
     def __init__(self, hidden_dim, output_dim, num_layers):
         super().__init__()
         self.rnn = nn.GRU(input_size=hidden_dim, hidden_size=hidden_dim,
-                           num_layers=num_layers, batch_first=True)
+                           num_layers=num_layers, batch_first=True, dropout=0.2)
         self.fc = nn.Linear(hidden_dim, output_dim)
         self.act = nn.Sigmoid()  # or your chosen activation
     def forward(self, h):
@@ -52,7 +50,7 @@ class Generator(nn.Module):
     def __init__(self, input_dim, hidden_dim, num_layers):
         super().__init__()
         self.rnn = nn.GRU(input_size=input_dim, hidden_size=hidden_dim,
-                           num_layers=num_layers, batch_first=True)
+                           num_layers=num_layers, batch_first=True, dropout=0.2)
         self.fc = nn.Linear(hidden_dim, hidden_dim)
         self.act = nn.Sigmoid()
     def forward(self, z):
@@ -66,7 +64,7 @@ class Supervisor(nn.Module):
         # As in TimeGAN, use (num_layers - 1) or simply reuse the same layering
         effective_layers = max(1, num_layers - 1)
         self.rnn = nn.GRU(input_size=hidden_dim, hidden_size=hidden_dim,
-                           num_layers=effective_layers, batch_first=True)
+                           num_layers=effective_layers, batch_first=True, dropout=0.2)
         self.fc = nn.Linear(hidden_dim, hidden_dim)
         self.act = nn.Sigmoid()
     def forward(self, h):
@@ -78,7 +76,7 @@ class Discriminator(nn.Module):
     def __init__(self, hidden_dim, num_layers):
         super().__init__()
         self.rnn = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim,
-                           num_layers=num_layers, batch_first=True)
+                           num_layers=num_layers, batch_first=True, dropout=0.2)
         self.fc = nn.Linear(hidden_dim, 1)
     def forward(self, h):
         out, _ = self.rnn(h)
@@ -112,7 +110,7 @@ class TimeGAN:
         self.gamma = parameters.get("gamma", 1.0)
         self.batch_size = parameters.get("batch_size", 64)
         self.lr = parameters.get("lr", 0.001)
-        self.dataset_name = parameters.get("dataset_name", "custom")
+        self.dataset_name = parameters.get("dataset_name", "unnamed_dataset")
         self.device = parameters.get("device", torch.device("cpu"))
         
         # Build modules
@@ -150,7 +148,7 @@ class TimeGAN:
                         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_" \
                         f"{uuid.uuid4().hex[:8]}_" \
                         f"n_layers{self.num_layers}_seq_len{self.seq_len}_n_seq{self.n_seq}"
-        
+                
         self.logger.info(f"Model initialized with ID: {self.model_id}")
 
     def _init_weights(self, m: nn.Module):
@@ -658,7 +656,6 @@ class TimeGAN:
                 # Early stopping
                 if patience_counter >= patience:
                     self.logger.info(f"[Joint] Early stopping at epoch {step} with best validation loss: {best_val_loss:.4f}")
-                    print(f"[Joint] Early stopping at epoch {step} with best validation loss: {best_val_loss:.4f}")
                     break
 
             # ---------------------------------
@@ -672,7 +669,6 @@ class TimeGAN:
                 if val_data is not None and val_total_loss is not None:
                     log_msg += f", Val Loss={val_total_loss:.4f}"
                 self.logger.info(log_msg)
-                print(log_msg)
 
         # Restore best model if early stopping occurred
         if best_model_state is not None and patience_counter < patience:
@@ -689,27 +685,104 @@ class TimeGAN:
             self.opt_discriminator.load_state_dict(best_model_state["opt_discriminator"])
 
             self.logger.info("[Joint] Restored best model from early stopping.")
-            print("[Joint] Restored best model from early stopping.")
+            
+    def save_model(self, 
+                   save_dir: str = './model_checkpoints/'):
+        """
+        Saves the trained TimeGAN model, including:
+        - Model architecture & weights (encoder, decoder, generator, supervisor, discriminator)
+        - Optimizer states (for continued training)
+        - Model ID (for reference)
+
+        Args:
+            model_path (str): Path to save the model (e.g., "checkpoints/timegan.pth").
+        """
+        save_dir = os.path.join(save_dir, self.dataset_name)
+        
+        # Ensure directory exists
+        os.makedirs(save_dir, exist_ok=True)
+
+        model_path = os.path.join(save_dir, self.model_id)
+
+        # Prepare dictionary of model state
+        model_state = {
+            "model_id": self.model_id,  # Save model ID for tracking
+            "encoder": self.encoder.state_dict(),
+            "decoder": self.decoder.state_dict(),
+            "generator": self.generator.state_dict(),
+            "supervisor": self.supervisor.state_dict(),
+            "discriminator": self.discriminator.state_dict(),
+            "opt_encoder": self.opt_encoder.state_dict(),
+            "opt_decoder": self.opt_decoder.state_dict(),
+            "opt_generator": self.opt_generator.state_dict(),
+            "opt_supervisor": self.opt_supervisor.state_dict(),
+            "opt_discriminator": self.opt_discriminator.state_dict(),
+        }
+        
+        # Save model state
+        torch.save(model_state, model_path)
+
+        self.logger.info(f"[Model Saved] Successfully saved model to {model_path}")
+    
+    def load_model(self, model_path: str):
+        """
+        Loads a saved TimeGAN model, including:
+        - Model weights (encoder, decoder, generator, supervisor, discriminator)
+        - Optimizer states (to resume training if needed)
+        - Model ID
+
+        Args:
+            model_path (str): Path to the saved model file (e.g., "checkpoints/timegan.pth").
+        """
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model file '{model_path}' not found.")
+
+        # Load checkpoint
+        model_state = torch.load(model_path, map_location=self.device)
+
+        # Restore model ID
+        self.model_id = model_state.get("model_id", "unknown_model")
+
+        # Restore model weights
+        self.encoder.load_state_dict(model_state["encoder"])
+        self.decoder.load_state_dict(model_state["decoder"])
+        self.generator.load_state_dict(model_state["generator"])
+        self.supervisor.load_state_dict(model_state["supervisor"])
+        self.discriminator.load_state_dict(model_state["discriminator"])
+
+        # Restore optimizers
+        self.opt_encoder.load_state_dict(model_state["opt_encoder"])
+        self.opt_decoder.load_state_dict(model_state["opt_decoder"])
+        self.opt_generator.load_state_dict(model_state["opt_generator"])
+        self.opt_supervisor.load_state_dict(model_state["opt_supervisor"])
+        self.opt_discriminator.load_state_dict(model_state["opt_discriminator"])
+
+        self.logger.info(f"[Model Loaded] Successfully loaded model from {model_path} (ID: {self.model_id})")
             
     def train(self, train_data: np.ndarray,
               val_data: np.ndarray = None,
               ae_iters: int = 250,
               sup_iters: int = 250,
-              joint_iters: int = 250):
+              joint_iters: int = 250,
+              patience: int = 15,
+              save_dir: str = './model_checkpoints/'):
         """
         Wrapper to run the three phases in sequence.
         """
         # Phase 1: Autoencoder training
         self.logger.info("[Training] Phase 1: Autoencoder")
-        self.train_autoencoder(train_data, val_data, epoch=ae_iters)
+        self.train_autoencoder(train_data, val_data, epoch=ae_iters, patience=patience)
         
         # Phase 2: Supervised training
         self.logger.info("[Training] Phase 2: Supervisor")
-        self.train_supervisor(train_data, val_data, epoch=sup_iters)
+        self.train_supervisor(train_data, val_data, epoch=sup_iters, patience=patience)
         
         # Phase 3: Joint training
         self.logger.info("[Training] Phase 3: Joint")
-        self.train_joint_network(train_data, val_data, epoch=joint_iters)
+        self.train_joint_network(train_data, val_data, epoch=joint_iters, patience=patience)
+                
+        # Save model
+        self.save_model(save_dir)
     
     def generate(self, num_samples: int) -> np.ndarray:
         """
