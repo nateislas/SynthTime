@@ -6,6 +6,7 @@ import joblib
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import TimeSeriesSplit
 import os
+from sklearn.preprocessing import OneHotEncoder
 
 def set_seed(seed: int = 42):
     """
@@ -169,10 +170,6 @@ class KFoldTimeSeries:
             sequences.append(data[i:i + self.seq_len])
         return np.array(sequences)
     
-import os
-import numpy as np
-import pandas as pd
-
 def save_synth_data(synth_data: np.ndarray,
                     save_dir: str = './data/synthetic_data',
                     dataset_name: str = 'unnamed_dataset',
@@ -208,3 +205,48 @@ def save_synth_data(synth_data: np.ndarray,
         df.to_csv(file_path, index=False)
     
     print(f"Saved {n_samples} {dataset_name} (seq_len={seq_len}) generated synthetic samples to {save_path}")
+    
+def prepare_timegan_data_forecasting(df, seq_len=21):
+    """
+    Prepares data for Conditional TimeGAN for forecasting.
+
+    Args:
+        df (pd.DataFrame): DataFrame with columns [OPEN, HIGH, LOW, CLOSE, Market Regime, Monthly Return]
+        seq_len (int): Sequence length for time-series data.
+
+    Returns:
+        tuple: (time_series_data, condition_data)
+               - time_series_data: np.array of shape (n, seq_len, 4)
+               - condition_data: np.array of shape (n, seq_len, 4) [one-hot market regime + monthly return]
+    """
+    time_series_cols = ["OPEN", "HIGH", "LOW", "CLOSE"]
+    condition_cols = ["Market Regime", "Monthly Return"]
+
+    time_series_data = df[time_series_cols].values
+    condition_data = df[condition_cols].copy()
+
+    # One-Hot Encode Market Regime
+    encoder = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
+    market_regime_one_hot = encoder.fit_transform(condition_data[["Market Regime"]])  # Shape (n, 3)
+
+    # Ensure Monthly Return is also 2D
+    monthly_return = condition_data[["Monthly Return"]].values  # Convert to NumPy array
+
+    # Combine market regime and monthly return into a single array
+    condition_data = np.hstack((market_regime_one_hot, monthly_return))  # Shape (n, 4)
+
+    time_series_seq, condition_seq = [], []
+        
+    for i in range(len(df) - seq_len + 1):
+        time_series_seq.append(time_series_data[i:i + seq_len])  # Shape (seq_len, 4)
+        if i != 0:
+            condition_seq.append(condition_data[i-1])  # Now using (t-1) conditions
+        else:
+            condition_seq.append([np.nan,np.nan,np.nan,np.nan])  # Now using (t-1) conditions
+            
+    time_series_seq, condition_seq = np.array(time_series_seq), np.array(condition_seq)
+            
+    time_series_seq = time_series_seq[1:,:,:]
+    condition_seq = condition_seq[1:,:]
+
+    return time_series_seq, condition_seq
