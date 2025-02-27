@@ -8,8 +8,6 @@ from datetime import datetime
 from typing import Tuple
 from torch.utils.data import DataLoader, Dataset
 
-
-# Example placeholder or import from your own logger utility
 def create_logger():
     import logging
     logger = logging.getLogger("timegan")
@@ -19,7 +17,7 @@ def create_logger():
     return logger
 
 # ----------------------------------------------------------------------------
-# Example placeholder classes. Replace these with your actual model definitions.
+# 
 # ----------------------------------------------------------------------------
 class Encoder(nn.Module):
     def __init__(self, input_dim, hidden_dim, num_layers):
@@ -38,7 +36,7 @@ class Decoder(nn.Module):
         self.rnn = nn.GRU(input_size=hidden_dim, hidden_size=hidden_dim,
                            num_layers=num_layers, batch_first=True, dropout=0.2)
         self.fc = nn.Linear(hidden_dim, output_dim)
-        self.act = nn.Sigmoid()  # or your chosen activation
+        self.act = nn.Sigmoid()  # 
     def forward(self, h):
         out, _ = self.rnn(h)
         # map back to original dimension
@@ -117,7 +115,7 @@ class TimeGAN:
         self.encoder = Encoder(self.n_seq, self.hidden_dim, self.num_layers).to(self.device)
         self.decoder = Decoder(self.hidden_dim, self.n_seq, self.num_layers).to(self.device)
         self.generator = Generator(self.n_seq, self.hidden_dim, self.num_layers).to(self.device)
-        self.supervisor = Supervisor(self.hidden_dim, self.num_layers).to(self.device)
+        self.supervisor = Supervisor(self.hidden_dim, self.num_layers).to(self.device) # Change back to n-1 layers
         self.discriminator = Discriminator(self.hidden_dim, self.num_layers).to(self.device)
         
         # Initialize weights
@@ -147,7 +145,7 @@ class TimeGAN:
         self.model_id = f"{self.dataset_name}_" \
                         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_" \
                         f"{uuid.uuid4().hex[:8]}_" \
-                        f"n_layers{self.num_layers}_seq_len{self.seq_len}_n_seq{self.n_seq}"
+                        f"n_layers{self.num_layers}_seq_len{self.seq_len}_n_seq{self.n_seq}_hidden_dim{self.hidden_dim}"
                 
         self.logger.info(f"Model initialized with ID: {self.model_id}")
 
@@ -168,7 +166,7 @@ class TimeGAN:
                     nn.init.orthogonal_(param.data)
                 elif 'bias' in name:  # biases
                     nn.init.constant_(param.data, 0.0)
-                    # For LSTM, you might want to init forget gate bias = 1
+                    # For LSTM, might want to init forget gate bias = 1
                     if isinstance(m, nn.LSTM):
                         hidden_size = param.shape[0] // 4
                         param.data[hidden_size:2*hidden_size].fill_(1.0)
@@ -686,6 +684,8 @@ class TimeGAN:
 
             self.logger.info("[Joint] Restored best model from early stopping.")
             
+        return best_val_loss
+            
     def save_model(self, 
                    save_dir: str = './model_checkpoints/'):
         """
@@ -779,10 +779,12 @@ class TimeGAN:
         
         # Phase 3: Joint training
         self.logger.info("[Training] Phase 3: Joint")
-        self.train_joint_network(train_data, val_data, epoch=joint_iters, patience=patience)
+        best_val_loss = self.train_joint_network(train_data, val_data, epoch=joint_iters, patience=patience)
                 
         # Save model
         self.save_model(save_dir)
+        
+        return best_val_loss
     
     def generate(self, num_samples: int) -> np.ndarray:
         """
@@ -801,7 +803,4 @@ class TimeGAN:
             
         syn_data = X_hat.cpu().numpy()
         
-        # If you want to invert scaling:
-        # syn_data = self.scaler.inverse_transform(... )
-
         return syn_data

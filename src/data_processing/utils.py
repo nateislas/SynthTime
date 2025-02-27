@@ -4,6 +4,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 import joblib
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import TimeSeriesSplit
 
 def set_seed(seed: int = 42):
     """
@@ -75,8 +76,17 @@ class TimeSeriesDataset:
         print(f"Scaler saved at {scaler_path}")
 
     def _create_sequences(self, data):
+        """
+        Internal method to create sequences from data array.
+
+        Args:
+            data (numpy array): The data from which to form sequences.
+
+        Returns:
+            sequences (numpy array): An array of shape (num_sequences, seq_len, n_features).
+        """
         sequences = []
-        for i in range(len(data) - self.seq_len):
+        for i in range(len(data) - self.seq_len + 1):
             sequences.append(data[i:i + self.seq_len])
         return np.array(sequences)
 
@@ -87,6 +97,12 @@ class TimeSeriesDataset:
 
 
 class TimeSeriesData(Dataset):
+    """
+    Dataset for handling time-series data sequences.
+
+    Args:
+        data (numpy array): Data to be loaded, shaped (num_sequences, seq_len, n_features).
+    """
     def __init__(self, data):
         self.data = np.array(data)
 
@@ -95,3 +111,100 @@ class TimeSeriesData(Dataset):
 
     def __getitem__(self, index):
         return self.data[index]
+    
+    
+class KFoldTimeSeries:
+    def __init__(self, data, seq_len, n_splits=5):
+        """
+        Initializes a KFoldTimeSeries object for performing time-series cross-validation.
+
+        Args:
+            data (numpy array): The time-series data to split, shaped (n_samples, n_features).
+            seq_len (int): The length of each sequence.
+            n_splits (int): The number of folds or splits.
+        """
+        self.data = data
+        self.seq_len = seq_len
+        self.n_splits = n_splits
+        self.tscv = TimeSeriesSplit(n_splits=n_splits)
+
+    def get_fold(self, fold_index):
+        """
+        Retrieves training and validation datasets for a given fold index using TimeSeriesSplit.
+
+        Args:
+            fold_index (int): The index of the fold (0 to n_splits-1).
+
+        Returns:
+            train_dataset (TimeSeriesData): The training dataset for the fold.
+            val_dataset (TimeSeriesData): The validation dataset for the fold.
+        """
+        for i, (train_indices, val_indices) in enumerate(self.tscv.split(self.data)):
+            if i == fold_index:
+                # Fit scaler on the training data only
+                scaler = MinMaxScaler()
+                train_data_scaled = scaler.fit_transform(self.data.iloc[train_indices])
+                val_data_scaled = scaler.transform(self.data.iloc[val_indices])
+
+                # Create sequences
+                train_sequences = self._create_sequences(train_data_scaled)
+                val_sequences = self._create_sequences(val_data_scaled)
+
+                # Return as Dataset objects
+                return np.array(train_sequences), np.array(val_sequences)
+
+    def _create_sequences(self, data):
+        """
+        Internal method to create sequences from data array.
+
+        Args:
+            data (numpy array): The data from which to form sequences.
+
+        Returns:
+            sequences (numpy array): An array of shape (num_sequences, seq_len, n_features).
+        """
+        sequences = []
+        for i in range(len(data) - self.seq_len + 1):
+            sequences.append(data[i:i + self.seq_len])
+        return np.array(sequences)
+    
+def save_synth_data(synth_data: np.ndarray,
+                    save_dir: str = './data/synthetic_data',
+                    dataset_name: str = 'unnamed_dataset',
+                    col_names: list = []):
+    """
+    Save synthetic time-series data to a Parquet file.
+
+    Args:
+        synth_data: numpy array of shape (n, seq_len, n_seq), where:
+            - n is the number of generated samples,
+            - seq_len is the number of continuous trading days,
+            - n_seq is the number of features (e.g., OPEN, LOW, CLOSE, HIGH).
+        save_dir: Directory where the Parquet file will be saved.
+        dataset_name: Name of the dataset (used for naming the Parquet file).
+        col_names: List of column names. If empty, default names are generated.
+    """
+    # Ensure the directory exists
+    save_path = os.path.join(save_dir, dataset_name, str(synth_data.shape[1]))  # seq_len
+    os.makedirs(save_path, exist_ok=True)
+
+    # Flatten the synthetic data to shape (n, seq_len * n_seq)
+    n, seq_len, n_seq = synth_data.shape
+    synth_data_flat = synth_data.reshape(n, seq_len * n_seq)
+
+    # Generate default column names if col_names is not provided
+    if not col_names:
+        col_names = [f"day_{i//n_seq + 1}_feature_{i % n_seq + 1}" for i in range(seq_len * n_seq)]
+    
+    # Ensure the length of col_names matches the flattened data
+    assert len(col_names) == seq_len * n_seq, f"Expected {seq_len * n_seq} column names, got {len(col_names)}."
+
+    # Convert to pandas DataFrame
+    df = pd.DataFrame(synth_data_flat, columns=col_names)
+
+    # Define the Parquet file path
+    file_path = os.path.join(save_path, f"{dataset_name}_synth_data.parquet")
+
+    # Save to Parquet file
+    df.to_parquet(file_path, index=False)
+    print(f"Synthetic data saved to {file_path}")
