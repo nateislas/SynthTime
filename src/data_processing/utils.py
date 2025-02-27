@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader, Dataset
 import joblib
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import TimeSeriesSplit
+import os
 
 def set_seed(seed: int = 42):
     """
@@ -168,43 +169,42 @@ class KFoldTimeSeries:
             sequences.append(data[i:i + self.seq_len])
         return np.array(sequences)
     
+import os
+import numpy as np
+import pandas as pd
+
 def save_synth_data(synth_data: np.ndarray,
                     save_dir: str = './data/synthetic_data',
                     dataset_name: str = 'unnamed_dataset',
-                    col_names: list = []):
+                    col_names: list = None):
     """
-    Save synthetic time-series data to a Parquet file.
+    Save synthetic time-series data to Parquet files.
 
     Args:
         synth_data: numpy array of shape (n, seq_len, n_seq), where:
             - n is the number of generated samples,
             - seq_len is the number of continuous trading days,
             - n_seq is the number of features (e.g., OPEN, LOW, CLOSE, HIGH).
-        save_dir: Directory where the Parquet file will be saved.
-        dataset_name: Name of the dataset (used for naming the Parquet file).
-        col_names: List of column names. If empty, default names are generated.
+        save_dir: Directory where the Parquet files will be saved.
+        dataset_name: Name of the dataset (used for naming the Parquet files).
+        col_names: List of column names. If empty, default names are generated for each feature.
     """
+    n_samples = str(synth_data.shape[0])
+    seq_len = str(synth_data.shape[1])
+    
     # Ensure the directory exists
-    save_path = os.path.join(save_dir, dataset_name, str(synth_data.shape[1]))  # seq_len
+    save_path = os.path.join(save_dir, dataset_name, seq_len)
+    
     os.makedirs(save_path, exist_ok=True)
 
-    # Flatten the synthetic data to shape (n, seq_len * n_seq)
-    n, seq_len, n_seq = synth_data.shape
-    synth_data_flat = synth_data.reshape(n, seq_len * n_seq)
+    # Check if column names are provided
+    if col_names is None:
+        col_names = [f'feature_{i}' for i in range(synth_data.shape[2])]  # Assuming n_seq is the third dimension
 
-    # Generate default column names if col_names is not provided
-    if not col_names:
-        col_names = [f"day_{i//n_seq + 1}_feature_{i % n_seq + 1}" for i in range(seq_len * n_seq)]
+    # Iterate over each sample and save it as a Parquet file
+    for i in range(synth_data.shape[0]):
+        df = pd.DataFrame(synth_data[i], columns=col_names)
+        file_path = os.path.join(save_path, f"{dataset_name}_sample_{i}.csv")
+        df.to_csv(file_path, index=False)
     
-    # Ensure the length of col_names matches the flattened data
-    assert len(col_names) == seq_len * n_seq, f"Expected {seq_len * n_seq} column names, got {len(col_names)}."
-
-    # Convert to pandas DataFrame
-    df = pd.DataFrame(synth_data_flat, columns=col_names)
-
-    # Define the Parquet file path
-    file_path = os.path.join(save_path, f"{dataset_name}_synth_data.parquet")
-
-    # Save to Parquet file
-    df.to_parquet(file_path, index=False)
-    print(f"Synthetic data saved to {file_path}")
+    print(f"Saved {n_samples} {dataset_name} (seq_len={seq_len}) generated synthetic samples to {save_path}")
