@@ -205,10 +205,11 @@ def save_synth_data(synth_data: np.ndarray,
         df.to_csv(file_path, index=False)
     
     print(f"Saved {n_samples} {dataset_name} (seq_len={seq_len}) generated synthetic samples to {save_path}")
-    
+
 def prepare_timegan_data_forecasting(df, seq_len=21):
     """
-    Prepares data for Conditional TimeGAN for forecasting.
+    Prepares data for Conditional TimeGAN for forecasting. The condition at time t
+    is used to condition the sequence starting from time t.
 
     Args:
         df (pd.DataFrame): DataFrame with columns [OPEN, HIGH, LOW, CLOSE, Market Regime, Monthly Return]
@@ -216,8 +217,8 @@ def prepare_timegan_data_forecasting(df, seq_len=21):
 
     Returns:
         tuple: (time_series_data, condition_data)
-               - time_series_data: np.array of shape (n, seq_len, 4)
-               - condition_data: np.array of shape (n, seq_len, 4) [one-hot market regime + monthly return]
+            - time_series_data: np.array of shape (n, seq_len, 4)
+            - condition_data: np.array of shape (n, 4) [one-hot market regime + monthly return]
     """
     time_series_cols = ["OPEN", "HIGH", "LOW", "CLOSE"]
     condition_cols = ["Market Regime", "Monthly Return"]
@@ -236,17 +237,11 @@ def prepare_timegan_data_forecasting(df, seq_len=21):
     condition_data = np.hstack((market_regime_one_hot, monthly_return))  # Shape (n, 4)
 
     time_series_seq, condition_seq = [], []
-        
+
     for i in range(len(df) - seq_len + 1):
         time_series_seq.append(time_series_data[i:i + seq_len])  # Shape (seq_len, 4)
-        if i != 0:
-            condition_seq.append(condition_data[i-1])  # Now using (t-1) conditions
-        else:
-            condition_seq.append([np.nan,np.nan,np.nan,np.nan])  # Now using (t-1) conditions
-            
+        condition_seq.append(condition_data[i])  # Now using condition at time t for sequence at t
+
     time_series_seq, condition_seq = np.array(time_series_seq), np.array(condition_seq)
-            
-    time_series_seq = time_series_seq[1:,:,:]
-    condition_seq = condition_seq[1:,:]
 
     return time_series_seq, condition_seq
