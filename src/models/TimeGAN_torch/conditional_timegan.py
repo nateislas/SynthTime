@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Tuple
 from torch.utils.data import DataLoader, Dataset
+from typing import Optional
 
 def create_logger():
     import logging
@@ -27,7 +28,6 @@ class Encoder(nn.Module):
 
     def forward(self, x, cond):
         cond_expanded = cond.unsqueeze(1).repeat(1, x.shape[1], 1)  # Expand and repeat across sequence length
-        print(x.shape, cond.shape, cond_expanded.shape)  
         x = torch.cat((x, cond_expanded), dim=-1)  # Concatenate the correctly expanded conditioning variable
         out, _ = self.rnn(x)
         return out
@@ -56,7 +56,7 @@ class Generator(nn.Module):
         self.act = nn.Sigmoid()
 
     def forward(self, z, cond):
-        cond_expanded = cond.unsqueeze(1).repeat(1, z.shape[1], 1)
+        cond_expanded = cond.unsqueeze(1).repeat(1, z.shape[1], 1)  # Expand and repeat across sequence length
         z = torch.cat((z, cond_expanded), dim=-1)
         out, _ = self.rnn(z)
         return self.act(self.fc(out))
@@ -83,7 +83,7 @@ class Discriminator(nn.Module):
         self.fc = nn.Linear(hidden_dim, 1)
 
     def forward(self, h, cond):
-        cond_expanded = cond.unsqueeze(1).repeat(1, h.shape[1], 1)
+        cond_expanded = cond.unsqueeze(1).repeat(1, h.shape[1], 1)  # Expand and repeat across sequence length
         h = torch.cat((h, cond_expanded), dim=-1)
         out, _ = self.rnn(h)
         logits = self.fc(out)
@@ -173,8 +173,8 @@ class CondTimeGAN:
         Generates random noise and random conditioning values.
         """
         Z = torch.randn(batch_size, self.seq_len, self.n_seq, device=self.device)
-        cond = torch.randn(batch_size, self.cond_dim, device=self.device)  # Random conditioning variable
-        return Z, cond
+        #cond = torch.randn(batch_size, self.cond_dim, device=self.device)  # Random conditioning variable
+        return Z #, cond
     
     def train_autoencoder(self, 
                           train_data: np.ndarray, 
@@ -201,7 +201,10 @@ class CondTimeGAN:
         patience_counter = 0  # Track epochs without improvement
         
         train_loader = DataLoader(train_data, batch_size=self.batch_size, shuffle=True)
-
+        
+        if val_data:
+            val_loader = DataLoader(val_data, batch_size=self.batch_size, shuffle=True)
+        
         for step in range(epoch):
             train_loss = 0.0
             num_batches = 0
@@ -239,12 +242,9 @@ class CondTimeGAN:
                 with torch.no_grad():
                     val_loss = 0.0
                     val_batches = 0
-                    for X_mb in self._batch_generator(val_data, self.batch_size):
-                        sequences = X_mb[0]
-                        condition = X_mb[0]
-
-                        X_mb_torch = torch.tensor(sequences, dtype=torch.float32, device=self.device)
-                        cond_torch = torch.tensor(condition, dtype=torch.float32, device=self.device)
+                    for time_series_batch, cond_batch in val_loader:   
+                        X_mb_torch = torch.tensor(time_series_batch, dtype=torch.float32, device=self.device)
+                        cond_torch = torch.tensor(cond_batch, dtype=torch.float32, device=self.device)
                         
                         H = self.encoder(X_mb_torch, cond_torch)
                         X_tilde = self.decoder(H, cond_torch)
@@ -318,19 +318,25 @@ class CondTimeGAN:
         best_model_state = None
         patience_counter = 0  # Tracks epochs without improvement
 
+        train_loader = DataLoader(train_data, batch_size=self.batch_size, shuffle=True)
+        
+        if val_data:
+            val_loader = DataLoader(val_data, batch_size=self.batch_size, shuffle=True)
+
         for step in range(epoch):
             train_loss = 0.0
             num_batches = 0
 
-            for X_mb in self._batch_generator(train_data, self.batch_size):
-                X_mb_torch = torch.tensor(X_mb, dtype=torch.float32, device=self.device)
+            for time_series_batch, cond_batch in train_loader:                
+                X_mb_torch = torch.tensor(time_series_batch, dtype=torch.float32, device=self.device)
+                cond_torch = torch.tensor(cond_batch, dtype=torch.float32, device=self.device)
 
                 # Get real embeddings from the (frozen) encoder
                 with torch.no_grad():
                     H = self.encoder(X_mb_torch, cond_torch)
 
                 # Supervisor tries to predict next-step embeddings
-                H_hat_supervise = self.supervisor(H)
+                H_hat_supervise = self.supervisor(H, cond_torch)
 
                 # The supervised loss is MSE of next-step embeddings
                 if self.seq_len > 1:
@@ -358,11 +364,12 @@ class CondTimeGAN:
                 with torch.no_grad():
                     val_loss = 0.0
                     val_batches = 0
-                    for X_mb in self._batch_generator(val_data, self.batch_size):
-                        X_mb_torch = torch.tensor(X_mb, dtype=torch.float32, device=self.device)
+                    for time_series_batch, cond_batch in val_loader:                
+                        X_mb_torch = torch.tensor(time_series_batch, dtype=torch.float32, device=self.device)
+                        cond_torch = torch.tensor(cond_batch, dtype=torch.float32, device=self.device)
 
                         H = self.encoder(X_mb_torch, cond_torch)
-                        H_hat_supervise = self.supervisor(H)
+                        H_hat_supervise = self.supervisor(H, cond_torch)
 
                         if self.seq_len > 1:
                             sup_loss_val = self.loss_mse(H_hat_supervise[:, :-1, :], H[:, 1:, :])
@@ -424,28 +431,31 @@ class CondTimeGAN:
 
         total_loss = 0.0
         num_batches = 0
+        
+        val_loader = DataLoader(val_data, batch_size=self.batch_size, shuffle=True)
 
         with torch.no_grad():
-            for X_mb in self._batch_generator(val_data, self.batch_size):
-                X_mb_torch = torch.tensor(X_mb, dtype=torch.float32, device=self.device)
+            for time_series_batch, cond_batch in val_loader:                
+                X_mb_torch = torch.tensor(time_series_batch, dtype=torch.float32, device=self.device)
+                cond_torch = torch.tensor(cond_batch, dtype=torch.float32, device=self.device)
 
                 # 1. Encode real data
                 H = self.encoder(X_mb_torch, cond_torch)
 
                 # 2. Generate synthetic data
                 Z = self._random_generator(batch_size=X_mb_torch.size(0))
-                E_hat = self.generator(Z)
-                H_hat = self.supervisor(E_hat)
-                X_hat = self.decoder(H_hat)
+                E_hat = self.generator(Z, cond_torch)
+                H_hat = self.supervisor(E_hat, cond_torch)
+                X_hat = self.decoder(H_hat, cond_torch)
 
                 # 3. Compute G-related losses
-                Y_fake = self.discriminator(H_hat)
-                Y_fake_e = self.discriminator(E_hat)
+                Y_fake = self.discriminator(H_hat, cond_torch)
+                Y_fake_e = self.discriminator(E_hat, cond_torch)
                 valid = torch.ones_like(Y_fake, device=self.device)
                 g_loss_u = self.loss_bce(Y_fake, valid)
                 g_loss_u_e = self.loss_bce(Y_fake_e, valid)
 
-                H_hat_supervise = self.supervisor(H)
+                H_hat_supervise = self.supervisor(H, cond_torch)
                 if self.seq_len > 1:
                     g_loss_s = self.loss_mse(H_hat_supervise[:, :-1, :], H[:, 1:, :])
                 else:
@@ -465,7 +475,7 @@ class CondTimeGAN:
                           + 100.0 * g_loss_v)
 
                 # 4. Compute D-related losses
-                Y_real = self.discriminator(H)
+                Y_real = self.discriminator(H, cond_torch)
                 d_loss_real = self.loss_bce(Y_real, torch.ones_like(Y_real, device=self.device))
                 d_loss_fake = self.loss_bce(Y_fake, torch.zeros_like(Y_fake, device=self.device))
                 d_loss_fake_e = self.loss_bce(Y_fake_e, torch.zeros_like(Y_fake_e, device=self.device))
@@ -517,31 +527,38 @@ class CondTimeGAN:
         best_val_loss = float("inf")
         best_model_state = None
         patience_counter = 0
-
+        
+        train_loader = DataLoader(train_data, batch_size=self.batch_size, shuffle=True)
+        
         for step in range(epoch):
             # ------------------------------------------------------------------
             # (A) Train generator (and supervisor, embedder) more frequently
             # ------------------------------------------------------------------
             # Typically, we train G twice per D iteration
+            
+            train_iter = iter(train_loader)  # Create an iterator
+            
             for kk in range(2):
-                for X_mb in self._batch_generator(train_data, self.batch_size):
-                    X_mb_torch = torch.tensor(X_mb, dtype=torch.float32, device=self.device)
+                for time_series_batch, cond_batch in train_loader:                
+                    X_mb_torch = torch.tensor(time_series_batch, dtype=torch.float32, device=self.device)
+                    cond_torch = torch.tensor(cond_batch, dtype=torch.float32, device=self.device)
 
                     # 1. Real embeddings (Encoder)
                     H = self.encoder(X_mb_torch, cond_torch)
 
                     # 2. Random noise -> Generator -> Supervisor
+                    #    We combine the noise (Z) with the REAL condition from the batch
                     Z = self._random_generator(batch_size=X_mb_torch.size(0))
-                    E_hat = self.generator(Z)
-                    H_hat = self.supervisor(E_hat)
+                    E_hat = self.generator(Z, cond_torch)
+                    H_hat = self.supervisor(E_hat, cond_torch)
 
                     # 3. Reconstruct X via decode(H_hat)
-                    X_hat = self.decoder(H_hat)
+                    X_hat = self.decoder(H_hat, cond_torch)
 
                     # 4. Discriminator predictions
-                    Y_fake = self.discriminator(H_hat)
-                    Y_real = self.discriminator(H)
-                    Y_fake_e = self.discriminator(E_hat)
+                    Y_fake = self.discriminator(H_hat, cond_torch)
+                    Y_real = self.discriminator(H, cond_torch)
+                    Y_fake_e = self.discriminator(E_hat, cond_torch)
 
                     # ---------------------
                     # Generator Losses
@@ -551,7 +568,7 @@ class CondTimeGAN:
                     g_loss_u_e = self.loss_bce(Y_fake_e, valid)  # Fool D with E_hat
 
                     # Supervised loss
-                    H_hat_supervise = self.supervisor(H)
+                    H_hat_supervise = self.supervisor(H, cond_torch)
                     if self.seq_len > 1:
                         g_loss_s = self.loss_mse(H_hat_supervise[:, :-1, :], H[:, 1:, :])
                     else:
@@ -590,21 +607,22 @@ class CondTimeGAN:
             # ------------------------------------------------------------------
             # (B) Train discriminator (1 step)
             # ------------------------------------------------------------------
-            X_mb = next(self._batch_generator(train_data, self.batch_size), None)
-            if X_mb is None:
+            time_series_batch, cond_batch = next(train_iter)
+            if (time_series_batch is None) or (cond_batch is None):
                 # If there's no more data in the generator, we skip
                 continue
-
-            X_mb_torch = torch.tensor(X_mb, dtype=torch.float32, device=self.device)
+                
+            X_mb_torch = torch.tensor(time_series_batch, dtype=torch.float32, device=self.device)
+            cond_torch = torch.tensor(cond_batch, dtype=torch.float32, device=self.device)
             H = self.encoder(X_mb_torch, cond_torch)
 
             Z = self._random_generator(batch_size=X_mb_torch.size(0))
-            E_hat = self.generator(Z)
-            H_hat = self.supervisor(E_hat)
+            E_hat = self.generator(Z, cond_torch)
+            H_hat = self.supervisor(E_hat, cond_torch)
 
-            Y_real = self.discriminator(H)
-            Y_fake = self.discriminator(H_hat)
-            Y_fake_e = self.discriminator(E_hat)
+            Y_real = self.discriminator(H, cond_torch)
+            Y_fake = self.discriminator(H_hat, cond_torch)
+            Y_fake_e = self.discriminator(E_hat, cond_torch)
 
             d_loss_real = self.loss_bce(Y_real, torch.ones_like(Y_real, device=self.device))
             d_loss_fake = self.loss_bce(Y_fake, torch.zeros_like(Y_fake, device=self.device))
@@ -677,7 +695,8 @@ class CondTimeGAN:
 
             self.logger.info("[Joint] Restored best model from early stopping.")
             
-        return best_val_loss
+        if val_data:
+            return best_val_loss
             
     def save_model(self, 
                    save_dir: str = './model_checkpoints/'):
@@ -775,28 +794,49 @@ class CondTimeGAN:
         
         # Phase 3: Joint training
         self.logger.info("[Training] Phase 3: Joint")
-        best_val_loss = self.train_joint_network(train_data, val_data, epoch=joint_iters, patience=patience)
+        if val_data:
+            best_val_loss = self.train_joint_network(train_data, val_data, epoch=joint_iters, patience=patience)
+        else:
+            self.train_joint_network(train_data, val_data, epoch=joint_iters, patience=patience)
                 
         # Save model
         self.save_model(save_dir)
         
-        return best_val_loss
+        if val_data:
+            return best_val_loss
     
-    def generate(self, num_samples: int) -> np.ndarray:
+    def generate(self, num_samples: int, condition: Optional[np.ndarray] = None) -> np.ndarray:
         """
         Generate synthetic sequences using the trained generator + supervisor + decoder.
+
+        Args:
+            - num_samples (int): Number of sequences to generate.
+            - condition (np.ndarray or None): Conditioning variable (shape: [num_samples, cond_dim]). 
+              If None, a random condition will be generated.
+
+        Returns:
+            - syn_data (np.ndarray): Generated synthetic sequences of shape [num_samples, seq_len, n_seq].
         """
         self.generator.eval()
         self.supervisor.eval()
-        self.encoder.eval()
         self.decoder.eval()
-        
+
         with torch.no_grad():
+            # Generate random noise for generator input
             Z = torch.randn(num_samples, self.seq_len, self.n_seq, device=self.device)
-            E_hat = self.generator(Z)
-            H_hat = self.supervisor(E_hat)
-            X_hat = self.decoder(H_hat)  # shape: [num_samples, seq_len, n_seq]
-            
-        syn_data = X_hat.cpu().numpy()
-        
-        return syn_data
+
+            # Handle conditioning
+            if condition is None:
+                cond = torch.randn(num_samples, self.cond_dim, device=self.device)  # Random condition
+            else:
+                # Convert provided condition to tensor
+                cond = torch.from_numpy(condition).float().to(self.device)
+                if cond.shape[0] != num_samples or cond.shape[1] != self.cond_dim:
+                    raise ValueError(f"Condition shape mismatch: Expected ({num_samples}, {self.cond_dim}), got {cond.shape}")
+
+            # Generate synthetic latent embeddings
+            E_hat = self.generator(Z, cond)
+            H_hat = self.supervisor(E_hat, cond)
+            X_hat = self.decoder(H_hat, cond)  # shape: [num_samples, seq_len, n_seq]
+
+        return X_hat.cpu().numpy()

@@ -1,5 +1,6 @@
 import yfinance as yf
 import pandas as pd
+import numpy as np
 
 def get_sp500_market_regime(start_date="2000-01-01", end_date="2024-12-31"):
     """
@@ -41,6 +42,6 @@ def get_sp500_market_regime(start_date="2000-01-01", end_date="2024-12-31"):
     sp500.columns = sp500.columns.get_level_values(0)  # Flatten multi-index if it exists
     
     sp500["Date"] = sp500["Date"].dt.strftime('%Y-%m-%d')
-
+    
     # Return only necessary columns
     return sp500[["Date", "Market Regime", "Monthly Return"]]
