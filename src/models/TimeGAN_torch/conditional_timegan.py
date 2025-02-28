@@ -113,6 +113,13 @@ class CondTimeGAN:
         self.generator = Generator(self.n_seq, self.cond_dim, self.hidden_dim, self.num_layers).to(self.device)
         self.supervisor = Supervisor(self.hidden_dim, self.cond_dim, self.num_layers).to(self.device)
         self.discriminator = Discriminator(self.hidden_dim, self.cond_dim, self.num_layers).to(self.device)
+        
+        # Initialize weights
+        self.encoder.apply(self._init_weights)
+        self.decoder.apply(self._init_weights)
+        self.generator.apply(self._init_weights)
+        self.supervisor.apply(self._init_weights)
+        self.discriminator.apply(self._init_weights)
 
         # Initialize optimizers
         self.opt_encoder = optim.Adam(self.encoder.parameters(), lr=self.lr)
@@ -155,26 +162,12 @@ class CondTimeGAN:
                         hidden_size = param.shape[0] // 4
                         param.data[hidden_size:2*hidden_size].fill_(1.0)
     
-    def _batch_generator(self, data: np.ndarray, batch_size: int):
-        """
-        Simple example of a batch generator.
-        data is assumed to be a numpy array of shape [N, seq_len, n_seq].
-        Yields X_mb in random mini-batches.
-        """
-        N = data.shape[0]
-        idx = np.random.permutation(N)
-        for i in range(0, N, batch_size):
-            batch_idx = idx[i : i + batch_size]
-            X_mb = data[batch_idx]  # shape [batch, seq_len, n_seq]
-            yield X_mb
-    
     def _random_generator(self, batch_size: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Generates random noise and random conditioning values.
         """
         Z = torch.randn(batch_size, self.seq_len, self.n_seq, device=self.device)
-        #cond = torch.randn(batch_size, self.cond_dim, device=self.device)  # Random conditioning variable
-        return Z #, cond
+        return Z
     
     def train_autoencoder(self, 
                           train_data: np.ndarray, 
