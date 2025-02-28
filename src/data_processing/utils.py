@@ -94,26 +94,8 @@ class TimeSeriesDataset:
 
     def get_datasets(self):
         """Returns train, val, and test datasets as PyTorch Dataset objects."""
-        #return TimeSeriesData(self.train_data), TimeSeriesData(self.val_data), TimeSeriesData(self.test_data)
         return self.train_data, self.val_data, self.test_data
 
-
-class TimeSeriesData(Dataset):
-    """
-    Dataset for handling time-series data sequences.
-
-    Args:
-        data (numpy array): Data to be loaded, shaped (num_sequences, seq_len, n_features).
-    """
-    def __init__(self, data):
-        self.data = np.array(data)
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, index):
-        return self.data[index]
-    
     
 class KFoldTimeSeries:
     def __init__(self, data, seq_len, n_splits=5):
@@ -206,7 +188,7 @@ def save_synth_data(synth_data: np.ndarray,
     
     print(f"Saved {n_samples} {dataset_name} (seq_len={seq_len}) generated synthetic samples to {save_path}")
 
-def prepare_timegan_data_forecasting(df, seq_len=21, train_ratio=0.8, val_ratio=0.1):
+def prepare_condtimegan_data(df, seq_len=21, train_ratio=0.8, val_ratio=0.1):
     """
     Prepares data for Conditional TimeGAN for forecasting and splits into train, validation, and test sets.
     The scaler is fit only on the training data to avoid data leakage.
@@ -273,19 +255,94 @@ def prepare_timegan_data_forecasting(df, seq_len=21, train_ratio=0.8, val_ratio=
 
     return (time_series_train, condition_train), (time_series_val, condition_val), (time_series_test, condition_test)
 
-
+    
 class CondTimeSeriesDataset(Dataset):
-    def __init__(self, data: np.ndarray):
+    def __init__(self, time_series_data: np.ndarray, cond_data: np.ndarray):
         """
-        time_series_data: np.ndarray of shape (n, seq_len, n_seq)
-        cond_data: np.ndarray of shape (n, cond_dim)
-        """
+        Custom dataset for Conditional TimeGAN.
 
-        self.time_series_data = torch.tensor(data[0], dtype=torch.float32)
-        self.cond_data = torch.tensor(data[1], dtype=torch.float32)
+        Args:
+            time_series_data (np.ndarray): Time-series sequences (n, seq_len, features).
+            cond_data (np.ndarray): Conditioning data (n, condition_dim).
+        """
+        self.time_series_data = torch.tensor(time_series_data, dtype=torch.float32)
+        self.cond_data = torch.tensor(cond_data, dtype=torch.float32)
 
     def __len__(self):
         return len(self.time_series_data)
 
     def __getitem__(self, idx):
         return self.time_series_data[idx], self.cond_data[idx]
+
+
+def prepare_condtimegan_dataset(df, seq_len=21, train_ratio=0.8, val_ratio=0.1):
+    """
+    Prepares data for Conditional TimeGAN for forecasting and returns train, validation, and test datasets.
+
+    Args:
+        df (pd.DataFrame): DataFrame with columns [OPEN, HIGH, LOW, CLOSE, Market Regime, Monthly Return]
+        seq_len (int): Sequence length for time-series data.
+        train_ratio (float): Proportion of data used for training.
+        val_ratio (float): Proportion of data used for validation.
+
+    Returns:
+        tuple: (train_dataset, val_dataset, test_dataset, scaler)
+            - train_dataset (CondTimeSeriesDataset)
+            - val_dataset (CondTimeSeriesDataset)
+            - test_dataset (CondTimeSeriesDataset)
+            - scaler (MinMaxScaler fitted on train data for inverse transformations)
+    """
+    time_series_cols = ["OPEN", "HIGH", "LOW", "CLOSE"]
+    condition_cols = ["Market Regime", "Monthly Return"]
+
+    # Extract time-series data
+    time_series_data = df[time_series_cols].values
+
+    # Split indices for train, val, test
+    n = len(time_series_data)
+    train_end = int(n * train_ratio)
+    val_end = train_end + int(n * val_ratio)
+
+    # Fit scaler only on training data to avoid leakage
+    scaler = MinMaxScaler()
+    time_series_train = scaler.fit_transform(time_series_data[:train_end])  # Fit on train
+    time_series_val = scaler.transform(time_series_data[train_end:val_end])  # Transform only
+    time_series_test = scaler.transform(time_series_data[val_end:])  # Transform only
+
+    # Combine scaled data for sequence creation
+    time_series_data_scaled = np.vstack([time_series_train, time_series_val, time_series_test])
+
+    # Process condition data
+    condition_data = df[condition_cols].copy()
+
+    # One-Hot Encode Market Regime
+    encoder = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
+    market_regime_one_hot = encoder.fit_transform(condition_data[["Market Regime"]])  # Shape (n, 3)
+
+    # Ensure Monthly Return is also 2D and apply log transform
+    monthly_return = np.log2(condition_data[["Monthly Return"]].values + 1)
+
+    # Combine market regime and monthly return into one condition array
+    condition_data = np.hstack((market_regime_one_hot, monthly_return))  # Shape (n, 4)
+
+    # Create sequences
+    time_series_seq, condition_seq = [], []
+
+    for i in range(len(df) - seq_len + 1):
+        time_series_seq.append(time_series_data_scaled[i:i + seq_len])  # (seq_len, 4)
+        condition_seq.append(condition_data[i])  # Use condition at time t
+
+    # Convert lists to NumPy arrays
+    time_series_seq, condition_seq = np.array(time_series_seq), np.array(condition_seq)
+
+    # Split into train, validation, test
+    time_series_train, condition_train = time_series_seq[:train_end], condition_seq[:train_end]
+    time_series_val, condition_val = time_series_seq[train_end:val_end], condition_seq[train_end:val_end]
+    time_series_test, condition_test = time_series_seq[val_end:], condition_seq[val_end:]
+
+    # Create PyTorch datasets
+    train_dataset = CondTimeSeriesDataset(time_series_train, condition_train)
+    val_dataset = CondTimeSeriesDataset(time_series_val, condition_val)
+    test_dataset = CondTimeSeriesDataset(time_series_test, condition_test)
+
+    return train_dataset, val_dataset, test_dataset
