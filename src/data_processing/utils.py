@@ -245,3 +245,19 @@ def prepare_timegan_data_forecasting(df, seq_len=21):
     time_series_seq, condition_seq = np.array(time_series_seq), np.array(condition_seq)
 
     return time_series_seq, condition_seq
+
+
+class CondTimeSeriesDataset(Dataset):
+    def __init__(self, time_series_data: np.ndarray, cond_data: np.ndarray):
+        """
+        time_series_data: np.ndarray of shape (n, seq_len, n_seq)
+        cond_data: np.ndarray of shape (n, cond_dim)
+        """
+        self.time_series_data = torch.tensor(time_series_data, dtype=torch.float32)
+        self.cond_data = torch.tensor(cond_data, dtype=torch.float32)
+
+    def __len__(self):
+        return len(self.time_series_data)
+
+    def __getitem__(self, idx):
+        return self.time_series_data[idx], self.cond_data[idx]

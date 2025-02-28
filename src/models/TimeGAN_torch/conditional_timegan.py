@@ -26,8 +26,9 @@ class Encoder(nn.Module):
                           num_layers=num_layers, batch_first=True, dropout=0.2)
 
     def forward(self, x, cond):
-        cond_expanded = cond.unsqueeze(1).repeat(1, x.shape[1], 1)  # Repeat across sequence length
-        x = torch.cat((x, cond_expanded), dim=-1)  # Concatenate conditioning variable
+        cond_expanded = cond.unsqueeze(1).repeat(1, x.shape[1], 1)  # Expand and repeat across sequence length
+        print(x.shape, cond.shape, cond_expanded.shape)  
+        x = torch.cat((x, cond_expanded), dim=-1)  # Concatenate the correctly expanded conditioning variable
         out, _ = self.rnn(x)
         return out
 
@@ -95,14 +96,15 @@ class CondTimeGAN:
         self.logger = create_logger()
         
         # Extract parameters
+        self.dataset_name = parameters["dataset_name"]
         self.seq_len = parameters["seq_len"]
         self.n_seq = parameters["n_seq"]
         self.hidden_dim = parameters["hidden_dim"]
         self.num_layers = parameters["num_layers"]
         self.cond_dim = parameters["cond_dim"]  # New conditioning variable dimension
         self.gamma = parameters.get("gamma", 1.0)
-        self.batch_size = parameters.get("batch_size", 64)
-        self.lr = parameters.get("lr", 0.001)
+        self.batch_size = parameters.get("batch_size", 32)
+        self.lr = parameters.get("lr", 2e-4)
         self.device = parameters.get("device", torch.device("cpu"))
         
         # Initialize models with conditioning support
@@ -197,17 +199,20 @@ class CondTimeGAN:
         best_val_loss = float("inf")
         best_model_state = None
         patience_counter = 0  # Track epochs without improvement
+        
+        train_loader = DataLoader(train_data, batch_size=self.batch_size, shuffle=True)
 
         for step in range(epoch):
             train_loss = 0.0
             num_batches = 0
 
-            for X_mb in self._batch_generator(train_data, self.batch_size):
-                X_mb_torch = torch.tensor(X_mb, dtype=torch.float32, device=self.device)
+            for time_series_batch, cond_batch in train_loader:                
+                X_mb_torch = torch.tensor(time_series_batch, dtype=torch.float32, device=self.device)
+                cond_torch = torch.tensor(cond_batch, dtype=torch.float32, device=self.device)
 
                 # Forward pass: encode -> decode
                 H = self.encoder(X_mb_torch, cond_torch)
-                X_tilde = self.decoder(H)
+                X_tilde = self.decoder(H, cond_torch)
 
                 # Compute loss
                 mse = self.loss_mse(X_tilde, X_mb_torch)
@@ -235,9 +240,14 @@ class CondTimeGAN:
                     val_loss = 0.0
                     val_batches = 0
                     for X_mb in self._batch_generator(val_data, self.batch_size):
-                        X_mb_torch = torch.tensor(X_mb, dtype=torch.float32, device=self.device)
+                        sequences = X_mb[0]
+                        condition = X_mb[0]
+
+                        X_mb_torch = torch.tensor(sequences, dtype=torch.float32, device=self.device)
+                        cond_torch = torch.tensor(condition, dtype=torch.float32, device=self.device)
+                        
                         H = self.encoder(X_mb_torch, cond_torch)
-                        X_tilde = self.decoder(H)
+                        X_tilde = self.decoder(H, cond_torch)
 
                         mse_val = self.loss_mse(X_tilde, X_mb_torch)
                         val_loss += 10.0 * torch.sqrt(mse_val + 1e-7).item()
@@ -751,6 +761,9 @@ class CondTimeGAN:
               save_dir: str = './model_checkpoints/'):
         """
         Wrapper to run the three phases in sequence.
+        
+        train_data: tuple, first element is the time-series data that is np.array(n, seq_len, n_seq), second element is np.array(n, cond_dim)
+        
         """
         # Phase 1: Autoencoder training
         self.logger.info("[Training] Phase 1: Autoencoder")
