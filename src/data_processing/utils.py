@@ -346,3 +346,74 @@ def prepare_condtimegan_dataset(df, seq_len=21, train_ratio=0.8, val_ratio=0.1):
     test_dataset = CondTimeSeriesDataset(time_series_test, condition_test)
 
     return train_dataset, val_dataset, test_dataset
+
+
+
+class CondTimeSeriesForecastDataset(Dataset):
+    def __init__(self, data_x: np.ndarray, cond_data: np.ndarray, data_y: np.ndarray):
+        """
+        Custom dataset for Conditional TimeGAN.
+
+        Args:
+            time_series_data (np.ndarray): Time-series sequences (n, seq_len, features).
+            cond_data (np.ndarray): Conditioning data (n, condition_dim).
+        """
+        self.data_x = torch.tensor(data_x, dtype=torch.float32)
+        self.cond_data = torch.tensor(cond_data, dtype=torch.float32)
+        self.data_y = torch.tensor(data_y, dtype=torch.float32)
+
+    def __len__(self):
+        return len(self.data_x)
+
+    def __getitem__(self, idx):
+        return self.data_x[idx], self.data_y[idx], self.cond_data[idx]
+
+def prepare_timegan_data_forecasting(df, seq_len=21, forecast_horizon=21, train_ratio=0.8, val_ratio=0.1):
+    """
+    Prepares forecasting dataset for TimeGAN, where input sequences predict future sequences.
+    """
+    time_series_cols = ["OPEN", "HIGH", "LOW", "CLOSE"]
+    condition_cols = ["Market Regime", "Monthly Return"]
+
+    # Convert to NumPy arrays
+    time_series_data = df[time_series_cols].values
+    condition_data = df[condition_cols].copy()
+
+    # One-Hot Encode Market Regime
+    encoder = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
+    market_regime_one_hot = encoder.fit_transform(condition_data[["Market Regime"]])
+
+    # Ensure Monthly Return is also 2D and apply log transform
+    monthly_return = np.log2(condition_data[["Monthly Return"]].values + 1)
+
+    # Combine condition variables
+    condition_data = np.hstack((market_regime_one_hot, monthly_return))
+
+    # Normalize time-series
+    scaler = MinMaxScaler()
+    time_series_data_scaled = scaler.fit_transform(time_series_data)
+
+    # Create forecasting sequences
+    X_seq, Y_seq, cond_seq = [], [], []
+
+    for i in range(len(df) - seq_len - forecast_horizon + 1):
+        X_seq.append(time_series_data_scaled[i:i + seq_len])   # Input sequence (past)
+        Y_seq.append(time_series_data_scaled[i + seq_len: i + seq_len + forecast_horizon])  # Future sequence (forecast)
+        cond_seq.append(condition_data[i:i + seq_len])  # Condition at time `t`
+
+    X_seq, Y_seq, cond_seq = np.array(X_seq), np.array(Y_seq), np.array(cond_seq)
+    
+    print(X_seq.shape)
+    print(Y_seq.shape)
+    print(cond_seq.shape)
+
+    # Split into train, val, test
+    n = len(X_seq)
+    train_end = int(n * train_ratio)
+    val_end = train_end + int(n * val_ratio)
+    
+    train_dataset = CondTimeSeriesForecastDataset(data_x=X_seq[:train_end], data_y=Y_seq[:train_end], cond_data=cond_seq[:train_end])
+    val_dataset = CondTimeSeriesForecastDataset(data_x=X_seq[train_end:val_end], data_y=Y_seq[train_end:val_end], cond_data=cond_seq[train_end:val_end])
+    test_dataset = CondTimeSeriesForecastDataset(data_x=X_seq[val_end:], data_y=Y_seq[val_end:], cond_data=cond_seq[val_end:])
+
+    return train_dataset, val_dataset, test_dataset

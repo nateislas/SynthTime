@@ -27,8 +27,9 @@ class Encoder(nn.Module):
                           num_layers=num_layers, batch_first=True, dropout=0.2)
 
     def forward(self, x, cond):
-        cond_expanded = cond.unsqueeze(1).repeat(1, x.shape[1], 1)  # Expand and repeat across sequence length
-        x = torch.cat((x, cond_expanded), dim=-1)  # Concatenate the correctly expanded conditioning variable
+        if cond.dim() == 2: # If conditions do not very across timesteps
+            cond_expanded = cond.unsqueeze(1).repeat(1, x.shape[1], 1)  # Expand and repeat across sequence length
+        x = torch.cat((x, cond), dim=-1)  # Concatenate the correctly expanded conditioning variable
         out, _ = self.rnn(x)
         return out
 
@@ -41,11 +42,12 @@ class Decoder(nn.Module):
         self.act = nn.Sigmoid()
 
     def forward(self, h, cond):
-        cond_expanded = cond.unsqueeze(1).repeat(1, h.shape[1], 1)
-        h = torch.cat((h, cond_expanded), dim=-1)
+        if cond.dim() == 2: # If conditions do not very across timesteps
+            cond_expanded = cond.unsqueeze(1).repeat(1, h.shape[1], 1)
+        h = torch.cat((h, cond), dim=-1)
         out, _ = self.rnn(h)
         out = self.fc(out)
-        return self.act(out)
+        return self.act(out)     
 
 class Generator(nn.Module):
     def __init__(self, input_dim, cond_dim, hidden_dim, num_layers):
@@ -56,8 +58,9 @@ class Generator(nn.Module):
         self.act = nn.Sigmoid()
 
     def forward(self, z, cond):
-        cond_expanded = cond.unsqueeze(1).repeat(1, z.shape[1], 1)  # Expand and repeat across sequence length
-        z = torch.cat((z, cond_expanded), dim=-1)
+        if cond.dim() == 2: # If conditions do not very across timesteps
+            cond_expanded = cond.unsqueeze(1).repeat(1, z.shape[1], 1)  # Expand and repeat across sequence length
+        z = torch.cat((z, cond), dim=-1)
         out, _ = self.rnn(z)
         return self.act(self.fc(out))
 
@@ -70,28 +73,30 @@ class Supervisor(nn.Module):
         self.act = nn.Sigmoid()
 
     def forward(self, h, cond):
-        cond_expanded = cond.unsqueeze(1).repeat(1, h.shape[1], 1)
-        h = torch.cat((h, cond_expanded), dim=-1)
+        if cond.dim() == 2: # If conditions do not very across timesteps
+            cond_expanded = cond.unsqueeze(1).repeat(1, h.shape[1], 1)
+        h = torch.cat((h, cond), dim=-1)
         out, _ = self.rnn(h)
         return self.act(self.fc(out))
 
 class Discriminator(nn.Module):
     def __init__(self, hidden_dim, cond_dim, num_layers):
         super().__init__()
-        self.rnn = nn.LSTM(input_size=hidden_dim + cond_dim, hidden_size=hidden_dim,
+        self.rnn = nn.GRU(input_size=hidden_dim + cond_dim, hidden_size=hidden_dim,
                            num_layers=num_layers, batch_first=True, dropout=0.2)
         self.fc = nn.Linear(hidden_dim, 1)
 
     def forward(self, h, cond):
-        cond_expanded = cond.unsqueeze(1).repeat(1, h.shape[1], 1)  # Expand and repeat across sequence length
-        h = torch.cat((h, cond_expanded), dim=-1)
+        if cond.dim() == 2: # If conditions do not very across timesteps
+            cond_expanded = cond.unsqueeze(1).repeat(1, h.shape[1], 1)  # Expand and repeat across sequence length
+        h = torch.cat((h, cond), dim=-1)
         out, _ = self.rnn(h)
         logits = self.fc(out)
         return logits
 # ----------------------------------------------------------------------------
 
 
-class CondTimeGAN:
+class CondTimeGANForecast:
     def __init__(self, parameters):
         self.logger = create_logger()
         
@@ -102,6 +107,7 @@ class CondTimeGAN:
         self.hidden_dim = parameters["hidden_dim"]
         self.num_layers = parameters["num_layers"]
         self.cond_dim = parameters["cond_dim"]  # New conditioning variable dimension
+        self.forecast_horizon = parameters["forecast_horizon"]
         self.gamma = parameters.get("gamma", 1.0)
         self.batch_size = parameters.get("batch_size", 32)
         self.lr = parameters.get("lr", 2e-4)
@@ -136,7 +142,7 @@ class CondTimeGAN:
         self.model_id = f"{self.dataset_name}_" \
                         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_" \
                         f"{uuid.uuid4().hex[:8]}_" \
-                        f"n_layers{self.num_layers}_seq_len{self.seq_len}_n_seq{self.n_seq}_hidden_dim{self.hidden_dim}_cond_dim{self.cond_dim}"
+                        f"n_layers{self.num_layers}_seq_len{self.seq_len}_n_seq{self.n_seq}_hidden_dim{self.hidden_dim}_cond_dim{self.cond_dim}_forecast_horizon{self.forecast_horizon}"
                 
         self.logger.info(f"Model initialized with ID: {self.model_id}")
 
@@ -202,10 +208,10 @@ class CondTimeGAN:
             train_loss = 0.0
             num_batches = 0
 
-            for time_series_batch, cond_batch in train_loader:                
+            for time_series_batch, _, cond_batch in train_loader:                
                 X_mb_torch = torch.tensor(time_series_batch, dtype=torch.float32, device=self.device)
                 cond_torch = torch.tensor(cond_batch, dtype=torch.float32, device=self.device)
-
+                
                 # Forward pass: encode -> decode
                 H = self.encoder(X_mb_torch, cond_torch)
                 X_tilde = self.decoder(H, cond_torch)
@@ -235,7 +241,7 @@ class CondTimeGAN:
                 with torch.no_grad():
                     val_loss = 0.0
                     val_batches = 0
-                    for time_series_batch, cond_batch in val_loader:   
+                    for time_series_batch, _, cond_batch in val_loader: 
                         X_mb_torch = torch.tensor(time_series_batch, dtype=torch.float32, device=self.device)
                         cond_torch = torch.tensor(cond_batch, dtype=torch.float32, device=self.device)
                         
@@ -255,9 +261,9 @@ class CondTimeGAN:
             # Logging
             if step % 10 == 0 or step == epoch - 1:
                 if val_data is not None:
-                    self.logger.info(f"[Autoencoder] Epoch {step}/{epoch}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+                    self.logger.info(f"[Autoencoder] Epoch {step+1}/{epoch}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
                 else:
-                    self.logger.info(f"[Autoencoder] Epoch {step}/{epoch}, Train Loss: {train_loss:.4f}")
+                    self.logger.info(f"[Autoencoder] Epoch {step+1}/{epoch}, Train Loss: {train_loss:.4f}")
 
             # Early stopping logic
             if val_data is not None:
@@ -320,8 +326,8 @@ class CondTimeGAN:
             train_loss = 0.0
             num_batches = 0
 
-            for time_series_batch, cond_batch in train_loader:                
-                X_mb_torch = torch.tensor(time_series_batch, dtype=torch.float32, device=self.device)
+            for x_batch, _, cond_batch in train_loader:                
+                X_mb_torch = torch.tensor(x_batch, dtype=torch.float32, device=self.device)
                 cond_torch = torch.tensor(cond_batch, dtype=torch.float32, device=self.device)
 
                 # Get real embeddings from the (frozen) encoder
@@ -357,8 +363,8 @@ class CondTimeGAN:
                 with torch.no_grad():
                     val_loss = 0.0
                     val_batches = 0
-                    for time_series_batch, cond_batch in val_loader:                
-                        X_mb_torch = torch.tensor(time_series_batch, dtype=torch.float32, device=self.device)
+                    for x_batch, _, cond_batch in train_loader:                
+                        X_mb_torch = torch.tensor(x_batch, dtype=torch.float32, device=self.device)
                         cond_torch = torch.tensor(cond_batch, dtype=torch.float32, device=self.device)
 
                         H = self.encoder(X_mb_torch, cond_torch)
@@ -380,9 +386,9 @@ class CondTimeGAN:
             # Logging
             if step % 10 == 0 or step == epoch - 1:
                 if val_data is not None:
-                    self.logger.info(f"[Supervisor] Epoch {step}/{epoch}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+                    self.logger.info(f"[Supervisor] Epoch {step+1}/{epoch}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
                 else:
-                    self.logger.info(f"[Supervisor] Epoch {step}/{epoch}, Train Loss: {train_loss:.4f}")
+                    self.logger.info(f"[Supervisor] Epoch {step+1}/{epoch}, Train Loss: {train_loss:.4f}")
 
             # Early stopping logic
             if val_data is not None:
@@ -428,8 +434,9 @@ class CondTimeGAN:
         val_loader = DataLoader(val_data, batch_size=self.batch_size, shuffle=True)
 
         with torch.no_grad():
-            for time_series_batch, cond_batch in val_loader:                
-                X_mb_torch = torch.tensor(time_series_batch, dtype=torch.float32, device=self.device)
+            for x_batch, y_batch, cond_batch in val_loader:                
+                X_mb_torch = torch.tensor(x_batch, dtype=torch.float32, device=self.device)
+                Y_mb_torch = torch.tensor(y_batch, dtype=torch.float32, device=self.device)
                 cond_torch = torch.tensor(cond_batch, dtype=torch.float32, device=self.device)
 
                 # 1. Encode real data
@@ -532,8 +539,9 @@ class CondTimeGAN:
             train_iter = iter(train_loader)  # Create an iterator
             
             for kk in range(2):
-                for time_series_batch, cond_batch in train_loader:                
-                    X_mb_torch = torch.tensor(time_series_batch, dtype=torch.float32, device=self.device)
+                for x_batch, y_batch, cond_batch in train_loader:                
+                    X_mb_torch = torch.tensor(x_batch, dtype=torch.float32, device=self.device)
+                    Y_mb_torch = torch.tensor(y_batch, dtype=torch.float32, device=self.device)
                     cond_torch = torch.tensor(cond_batch, dtype=torch.float32, device=self.device)
 
                     # 1. Real embeddings (Encoder)
@@ -569,18 +577,21 @@ class CondTimeGAN:
 
                     # Two-moment matching
                     x_hat_mean = torch.mean(X_hat, dim=0)
-                    x_mean = torch.mean(X_mb_torch, dim=0)
-                    x_hat_var = torch.var(X_hat, dim=0)
-                    x_var = torch.var(X_mb_torch, dim=0)
-                    g_loss_v1 = torch.mean(torch.abs(torch.sqrt(x_hat_var + 1e-6) - torch.sqrt(x_var + 1e-6)))
-                    g_loss_v2 = torch.mean(torch.abs(x_hat_mean - x_mean))
-                    g_loss_v = g_loss_v1 + g_loss_v2
-
-                    # Total Generator loss
+                    y_mean     = torch.mean(Y_mb_torch, dim=0)
+                    x_hat_var  = torch.var(X_hat, dim=0)
+                    y_var      = torch.var(Y_mb_torch, dim=0)
+                    g_loss_v1  = torch.mean(torch.abs(torch.sqrt(x_hat_var+1e-6) - torch.sqrt(y_var+1e-6)))
+                    g_loss_v2  = torch.mean(torch.abs(x_hat_mean - y_mean))
+                    g_loss_v   = g_loss_v1 + g_loss_v2
+                    
+                    # Forecasting MSE: X_hat vs. Y_mb_torch
+                    g_loss_f   = self.loss_mse(X_hat, Y_mb_torch)
+                    
                     G_loss = (g_loss_u 
-                              + self.gamma * g_loss_u_e 
-                              + 100.0 * torch.sqrt(g_loss_s + 1e-7) 
-                              + 100.0 * g_loss_v)
+                          + self.gamma*g_loss_u_e
+                          + 100.0 * torch.sqrt(g_loss_s + 1e-7)
+                          + 100.0 * g_loss_v
+                          + 100.0 * g_loss_f)
 
                     # ---------------------
                     # Backprop Generator
@@ -589,9 +600,7 @@ class CondTimeGAN:
                     self.opt_supervisor.zero_grad()
                     self.opt_encoder.zero_grad()
                     self.opt_decoder.zero_grad()
-
                     G_loss.backward()
-
                     self.opt_generator.step()
                     self.opt_supervisor.step()
                     self.opt_encoder.step()
@@ -600,12 +609,13 @@ class CondTimeGAN:
             # ------------------------------------------------------------------
             # (B) Train discriminator (1 step)
             # ------------------------------------------------------------------
-            time_series_batch, cond_batch = next(train_iter)
-            if (time_series_batch is None) or (cond_batch is None):
+            x_batch, y_batch, cond_batch = next(train_iter)
+            if (x_batch is None) or (y_batch is None) or (cond_batch is None):
                 # If there's no more data in the generator, we skip
                 continue
                 
-            X_mb_torch = torch.tensor(time_series_batch, dtype=torch.float32, device=self.device)
+            X_mb_torch = torch.tensor(x_batch, dtype=torch.float32, device=self.device)
+            Y_mb_torch = torch.tensor(y_batch, dtype=torch.float32, device=self.device)
             cond_torch = torch.tensor(cond_batch, dtype=torch.float32, device=self.device)
             H = self.encoder(X_mb_torch, cond_torch)
 
@@ -773,9 +783,9 @@ class CondTimeGAN:
               save_dir: str = './model_checkpoints/'):
         """
         Wrapper to run the three phases in sequence.
-        
-        train_data: tuple, first element is the time-series data that is np.array(n, seq_len, n_seq), second element is np.array(n, cond_dim)
-        
+        train_data: tuple, first element is the time-series data that is np.array(n, seq_len, n_seq), 
+        second element is the next seq_len forecast np.array(n, seq_len, n_seq), 
+        the third element is np.array(n, cond_dim)
         """
         # Phase 1: Autoencoder training
         self.logger.info("[Training] Phase 1: Autoencoder")
@@ -833,3 +843,44 @@ class CondTimeGAN:
             X_hat = self.decoder(H_hat, cond)  # shape: [num_samples, seq_len, n_seq]
 
         return X_hat.cpu().numpy()
+    
+    def generate_reinforced(self, num_samples, condition, sigma=1.0):
+        """
+        Generate synthetic sequences using a custom sigma for random noise 
+        to handle high volatility or spikes.
+        """
+        self.generator.eval()
+        self.supervisor.eval()
+        self.decoder.eval()
+
+        with torch.no_grad():
+            # Instead of standard normal, we draw from N(0, sigma^2)
+            Z = sigma * torch.randn(num_samples, self.seq_len, self.n_seq, device=self.device)
+
+            if condition is None:
+                cond = sigma * torch.randn(num_samples, self.cond_dim, device=self.device)
+            else:
+                cond = torch.from_numpy(condition).float().to(self.device)
+
+            E_hat = self.generator(Z, cond)
+            H_hat = self.supervisor(E_hat, cond)
+            X_hat = self.decoder(H_hat, cond)
+
+        return X_hat.cpu().numpy()
+    
+    def generate_intervals(self, condition, num_scenarios=500, sigma=1.0):
+        # 1) Repeatedly generate synthetic sequences
+        all_scenarios = []
+        for _ in range(num_scenarios):
+            scenario = self.generate_reinforced(1, condition, sigma=sigma)
+            all_scenarios.append(scenario[0])  # shape: (forecast_horizon, n_seq)
+
+        all_scenarios = np.array(all_scenarios)  # (num_scenarios, forecast_horizon, n_seq)
+
+        # 2) For each time step, compute quantiles
+        lower_5 = np.percentile(all_scenarios, 5, axis=0)
+        upper_95 = np.percentile(all_scenarios, 95, axis=0)
+
+        # 3) Probability density: optional. e.g. histogram or kernel density for each time step
+        # ...
+        return lower_5, upper_95, all_scenarios

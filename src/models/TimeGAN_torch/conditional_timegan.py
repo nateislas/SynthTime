@@ -78,7 +78,7 @@ class Supervisor(nn.Module):
 class Discriminator(nn.Module):
     def __init__(self, hidden_dim, cond_dim, num_layers):
         super().__init__()
-        self.rnn = nn.LSTM(input_size=hidden_dim + cond_dim, hidden_size=hidden_dim,
+        self.rnn = nn.GRU(input_size=hidden_dim + cond_dim, hidden_size=hidden_dim,
                            num_layers=num_layers, batch_first=True, dropout=0.2)
         self.fc = nn.Linear(hidden_dim, 1)
 
